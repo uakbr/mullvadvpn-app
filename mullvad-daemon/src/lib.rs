@@ -582,6 +582,8 @@ where
             exclusion_gid::set_exclusion_gid().map_err(Error::GroupIdError)?
         };
 
+        mullvad_rpc::proxy::ProxyConfig::try_delete_cache(&cache_dir).await;
+
         let runtime = tokio::runtime::Handle::current();
 
         let (internal_event_tx, internal_event_rx) = command_channel.destructure();
