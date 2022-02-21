@@ -226,12 +226,52 @@ class PacketTunnelProvider: NEPacketTunnelProvider, TunnelMonitorDelegate {
 
     // MARK: - TunnelMonitor
 
-    func tunnelMonitorDidDetermineConnectionEstablished(_ tunnelMonitor: TunnelMonitor) {
-        if let startTunnelCompletionHandler = startTunnelCompletionHandler {
-            providerLogger.debug("Call system start tunnel completion handler.")
+    func tunnelMonitor(_ tunnelMonitor: TunnelMonitor, connectionStatusDidChange status: TunnelMonitor.ConnectionStatus) {
+        dispatchPrecondition(condition: .onQueue(dispatchQueue))
 
-            startTunnelCompletionHandler(nil)
-            self.startTunnelCompletionHandler = nil
+        switch status {
+        case .established:
+            startTunnelCompletionHandler?(nil)
+            startTunnelCompletionHandler = nil
+
+            tunnelMonitor.stop()
+
+        case .lost:
+            guard let startTunnelCompletionHandler = startTunnelCompletionHandler else { return }
+
+            providerLogger.debug("Trying to connect to different relay.")
+
+            // Read tunnel configuration.
+            let tunnelConfiguration: PacketTunnelConfiguration
+            switch makeConfiguration(nil) {
+            case .success(let configuration):
+                tunnelConfiguration = configuration
+
+            case .failure(let error):
+                providerLogger.error(chainedError: error, message: "Failed to produce tunnel configuration to reconnect to different relay.")
+
+                startTunnelCompletionHandler(error)
+                self.startTunnelCompletionHandler = nil
+
+                tunnelMonitor.stop()
+                return
+            }
+
+            // Set tunnel connection info.
+            let tunnelConnectionInfo = tunnelConfiguration.selectorResult.tunnelConnectionInfo
+            self.tunnelConnectionInfo = tunnelConnectionInfo
+
+            // Update WireGuard configuration.
+            adapter.update(tunnelConfiguration: tunnelConfiguration.wgTunnelConfig) { error in
+                self.dispatchQueue.async {
+                    if let error = error {
+                        let tunnelProviderError = PacketTunnelProviderError.updateWireguardConfiguration(error)
+
+                        startTunnelCompletionHandler(tunnelProviderError)
+                        self.startTunnelCompletionHandler = nil
+                    }
+                }
+            }
         }
     }
 

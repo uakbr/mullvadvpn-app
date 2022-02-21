@@ -12,10 +12,31 @@ import WireGuardKit
 import Logging
 
 protocol TunnelMonitorDelegate: AnyObject {
-    func tunnelMonitorDidDetermineConnectionEstablished(_ tunnelMonitor: TunnelMonitor)
+    func tunnelMonitor(_ tunnelMonitor: TunnelMonitor, connectionStatusDidChange status: TunnelMonitor.ConnectionStatus)
 }
 
 class TunnelMonitor {
+    /// Interval at which to query the adapter for stats.
+    static let statsQueryInterval: DispatchTimeInterval = .milliseconds(50)
+
+    /// Interval for sending echo packets.
+    static let pingInterval: DispatchTimeInterval = .seconds(3)
+
+    /// Delay before sending the first echo packet.
+    static let pingStartDelay: DispatchTimeInterval = .milliseconds(500)
+
+    /// Interval after which connection is treated as being lost.
+    static let connectionTimeout: TimeInterval = 15
+
+    /// Tunnel connection status.
+    enum ConnectionStatus {
+        /// Connection established.
+        case established
+
+        /// Connection lost.
+        case lost
+    }
+
     /// Error emitted by TunnelMonitor.
     enum Error: LocalizedError {
         case createSocket
@@ -49,13 +70,13 @@ class TunnelMonitor {
 
     private var sequenceNumber: UInt16 = 0
     private var socket: CFSocket?
-    private var probeAddress: IPv4Address?
     private var rxBytes: UInt64 = 0
-    private var isConnectionEstablished = false
+    private var startDate: Date?
+    private var connectionStatus: ConnectionStatus?
 
     private var logger = Logger(label: "TunnelMonitor")
-    private var queryTimer: DispatchSourceTimer?
-    private var echoTimer: DispatchSourceTimer?
+    private var statsQueryTimer: DispatchSourceTimer?
+    private var pingTimer: DispatchSourceTimer?
 
     private weak var _delegate: TunnelMonitorDelegate?
     weak var delegate: TunnelMonitorDelegate? {
@@ -131,9 +152,9 @@ class TunnelMonitor {
             self?.onQueryTimer()
         }
 
-        let newEchoTimer = DispatchSource.makeTimerSource(flags: [], queue: queue)
-        newEchoTimer.setEventHandler { [weak self] in
-            self?.onEchoTimer()
+        let newPingTimer = DispatchSource.makeTimerSource(flags: [], queue: queue)
+        newPingTimer.setEventHandler { [weak self] in
+            self?.sendPing(address: address)
         }
 
         stateLock.lock()
@@ -143,20 +164,21 @@ class TunnelMonitor {
         }
 
         socket = newSocket
-        probeAddress = address
         rxBytes = 0
+        connectionStatus = nil
+        startDate = Date()
 
-        queryTimer?.cancel()
-        queryTimer = newQueryTimer
+        statsQueryTimer?.cancel()
+        statsQueryTimer = newQueryTimer
 
-        echoTimer?.cancel()
-        echoTimer = newEchoTimer
+        pingTimer?.cancel()
+        pingTimer = newPingTimer
 
-        newQueryTimer.schedule(wallDeadline: .now() + .seconds(2), repeating: .seconds(2))
+        newQueryTimer.schedule(wallDeadline: .now(), repeating: Self.statsQueryInterval)
         newQueryTimer.resume()
 
-        newEchoTimer.schedule(wallDeadline: .now() + .seconds(1), repeating: .seconds(1))
-        newEchoTimer.resume()
+        newPingTimer.schedule(wallDeadline: .now() + Self.pingStartDelay, repeating: Self.pingInterval)
+        newPingTimer.resume()
 
         stateLock.unlock()
 
@@ -172,13 +194,13 @@ class TunnelMonitor {
             self.socket = nil
         }
 
-        queryTimer?.cancel()
-        queryTimer = nil
+        statsQueryTimer?.cancel()
+        statsQueryTimer = nil
 
-        echoTimer?.cancel()
-        echoTimer = nil
+        pingTimer?.cancel()
+        pingTimer = nil
 
-        probeAddress = nil
+        startDate = nil
 
         stateLock.unlock()
     }
@@ -200,23 +222,51 @@ class TunnelMonitor {
             self.stateLock.lock()
             let oldRxBytes = self.rxBytes
 
-            self.logger.debug("Got newRxBytes = \(newRxBytes), (oldRxBytes: \(oldRxBytes))")
+            if newRxBytes != oldRxBytes {
+                self.logger.debug("Got newRxBytes = \(newRxBytes), (oldRxBytes: \(oldRxBytes))")
+            }
 
-            if !self.isConnectionEstablished && newRxBytes > oldRxBytes {
-                self.isConnectionEstablished = true
-                self.logger.debug("Connection established.")
+            switch self.connectionStatus {
+            case .none:
+                if newRxBytes > oldRxBytes {
+                    let newConnectionStatus = ConnectionStatus.established
 
-                self.queue.async {
-                    self.delegate?.tunnelMonitorDidDetermineConnectionEstablished(self)
+                    self.connectionStatus = newConnectionStatus
+                    self.logger.debug("Connection established.")
+
+                    self.queue.async {
+                        self.delegate?.tunnelMonitor(self, connectionStatusDidChange: newConnectionStatus)
+                    }
+                } else if let startDate = self.startDate, Date().timeIntervalSince(startDate) >= Self.connectionTimeout {
+                    let newConnectionStatus = ConnectionStatus.lost
+
+                    self.connectionStatus = newConnectionStatus
+                    self.logger.debug("Connection lost.")
+
+                    self.queue.async {
+                        self.delegate?.tunnelMonitor(self, connectionStatusDidChange: newConnectionStatus)
+                    }
+                }
+
+            case .established:
+                break
+
+            case .lost:
+                if newRxBytes > oldRxBytes {
+                    let newConnectionStatus = ConnectionStatus.established
+
+                    self.connectionStatus = newConnectionStatus
+                    self.logger.debug("Connection changed from lost to established.")
+
+                    self.queue.async {
+                        self.delegate?.tunnelMonitor(self, connectionStatusDidChange: newConnectionStatus)
+                    }
                 }
             }
+
             self.rxBytes = newRxBytes
             self.stateLock.unlock()
         }
-    }
-
-    private func onEchoTimer() {
-        sendEcho()
     }
 
     private class func parseRxBytes(str: String) -> UInt64? {
@@ -234,9 +284,9 @@ class TunnelMonitor {
         }
     }
 
-    private func sendEcho() {
+    private func sendPing(address: IPv4Address) {
         stateLock.lock()
-        guard let socket = socket, let probeAddress = probeAddress else {
+        guard let socket = socket else {
             stateLock.unlock()
             return
         }
@@ -246,7 +296,7 @@ class TunnelMonitor {
         var sa = sockaddr_in()
         sa.sin_len = UInt8(MemoryLayout.size(ofValue: sa))
         sa.sin_family = sa_family_t(AF_INET)
-        sa.sin_addr = probeAddress.rawValue.withUnsafeBytes { buffer in
+        sa.sin_addr = address.rawValue.withUnsafeBytes { buffer in
             return buffer.bindMemory(to: in_addr.self).baseAddress!.pointee
         }
 
