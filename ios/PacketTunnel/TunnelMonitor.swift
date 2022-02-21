@@ -301,7 +301,7 @@ class TunnelMonitor {
         }
 
         let sequenceNumber = nextSequenceNumber()
-        let packetData = Self.createPacket(identifier: identifier, sequenceNumber: sequenceNumber, payload: payload)
+        let packetData = Self.createICMPPacket(identifier: identifier, sequenceNumber: sequenceNumber, payload: payload)
 
         let bytesSent = packetData.withUnsafeBytes { dataBuffer -> Int in
             return withUnsafeBytes(of: &sa) { bufferPointer in
@@ -334,32 +334,33 @@ class TunnelMonitor {
         return nextSequenceNumber
     }
 
-    private class func createPacket(identifier: UInt16, sequenceNumber: UInt16, payload: Data) -> Data {
+    private class func createICMPPacket(identifier: UInt16, sequenceNumber: UInt16, payload: Data) -> Data {
         // Create data buffer.
         var data = Data()
 
-        // Create ICMP header struct.
-        var icmpHeader = ICMPHeader()
-        icmpHeader.type = UInt8(ICMP_ECHO)
-        icmpHeader.code = 0
-        icmpHeader.checksum = 0
-        icmpHeader.identifier = identifier.bigEndian
-        icmpHeader.sequenceNumber = sequenceNumber.bigEndian
+        // ICMP type.
+        data.append(UInt8(ICMP_ECHO))
 
-        // Copy ICMP packet into data buffer.
-        withUnsafeBytes(of: &icmpHeader) { buffer in
-            data.append(contentsOf: buffer)
-        }
+        // Code.
+        data.append(UInt8(0))
+
+        // Checksum.
+        withUnsafeBytes(of: UInt16(0)) { data.append(Data($0)) }
+
+        // Identifier.
+        withUnsafeBytes(of: identifier.bigEndian) { data.append(Data($0)) }
+
+        // Sequence number.
+        withUnsafeBytes(of: sequenceNumber.bigEndian) { data.append(Data($0)) }
 
         // Append payload.
         data.append(contentsOf: payload)
 
         // Calculate checksum.
-        icmpHeader.checksum = in_chksum(data)
+        let checksum = in_chksum(data)
 
-        // Put updated ICMP header containing checksum into the data buffer.
-        withUnsafeBytes(of: &icmpHeader) { buffer in
-            data.replaceSubrange(0..<buffer.count, with: buffer)
+        data.withUnsafeMutableBytes { buffer in
+            buffer.storeBytes(of: checksum, toByteOffset: 2, as: UInt16.self)
         }
 
         return data
