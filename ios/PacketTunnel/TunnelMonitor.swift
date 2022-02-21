@@ -81,31 +81,7 @@ class TunnelMonitor {
     }
 
     func start(address: IPv4Address) -> Result<(), TunnelMonitor.Error> {
-#if DEBUG
-        logger.debug("Creating socket with read callback.")
-
-        var context = CFSocketContext()
-        context.info = Unmanaged.passUnretained(self).toOpaque()
-
-        let newSocket = CFSocketCreate(
-            kCFAllocatorDefault,
-            AF_INET, SOCK_DGRAM, IPPROTO_ICMP,
-            CFSocketCallBackType.readCallBack.rawValue,
-            { (_ socket: CFSocket?, _ callbackType: CFSocketCallBackType, _ address: CFData?, _ data: UnsafeRawPointer?, _ info: UnsafeMutableRawPointer?) in
-                guard let socket = socket, let info = info else { return }
-
-                let client: TunnelMonitor = Unmanaged.fromOpaque(info).takeUnretainedValue()
-
-                client.socketHasDataAvailableToRead(socket: socket, callbackType: callbackType)
-            },
-            &context
-        )
-
-#else
-        logger.debug("Creating socket without read callback.")
-
         let newSocket = CFSocketCreate(kCFAllocatorDefault, AF_INET, SOCK_DGRAM, IPPROTO_ICMP, 0, nil, nil)
-#endif
 
         guard let newSocket = newSocket else {
             return .failure(.createSocket)
@@ -294,8 +270,6 @@ class TunnelMonitor {
 
         if bytesSent == -1 {
             logger.debug("Failed to send echo (errno: \(errno)).")
-        } else {
-            logger.debug("Send echo (sequence: \(sequenceNumber))")
         }
     }
 
@@ -340,81 +314,6 @@ class TunnelMonitor {
 
         return data
     }
-
-    #if DEBUG
-    private func socketHasDataAvailableToRead(socket: CFSocket, callbackType: CFSocketCallBackType) {
-        assert(self.socket == socket)
-        assert(callbackType == .readCallBack)
-
-        let bufferSize = 65535
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
-
-        var addr = sockaddr()
-        var addrlen = socklen_t(MemoryLayout.size(ofValue: addr))
-
-        let bytesRead = recvfrom(CFSocketGetNative(socket), &buffer, bufferSize, 0, &addr, &addrlen)
-
-        self.logger.debug("Read bytes: \(bytesRead)")
-
-        guard bytesRead > 0 else {
-            return
-        }
-
-        var sequence: UInt16 = 0
-        var sourceAddress: String?
-        let slice = Data(buffer.prefix(bytesRead))
-        let isValidResponse = validateResponse(data: slice, sequence: &sequence, sourceAddress: &sourceAddress)
-
-        if isValidResponse {
-            logger.debug("Got valid ICMP respponse from \(sourceAddress!) with sequence = \(sequence)")
-        } else {
-            logger.debug("Got invalid ICMP response")
-        }
-    }
-
-    private func validateResponse(data: Data, sequence outSequence: inout UInt16, sourceAddress outSourceAddress: inout String?) -> Bool {
-        var ipv4Header = data.withUnsafeBytes { $0.load(as: IPv4Header.self) }
-
-        // Check if IP header version
-        guard (ipv4Header.versionAndHeaderLength & 0xF0) == 0x40 else {
-            return false
-        }
-
-        // Check protocol
-        guard ipv4Header.protocol == IPPROTO_ICMP else {
-            return false
-        }
-
-        var addrBuffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-        inet_ntop(AF_INET, &ipv4Header.sourceAddress, &addrBuffer, socklen_t(addrBuffer.count))
-        let sourceAddress = String(cString: addrBuffer)
-
-        let dataOffsetInIPv4Header = Int(ipv4Header.versionAndHeaderLength & 0x0F) * MemoryLayout<UInt32>.size
-        guard data.count >= dataOffsetInIPv4Header + MemoryLayout<ICMPHeader>.size else {
-            return false
-        }
-
-        var packetData = data.advanced(by: dataOffsetInIPv4Header)
-
-        return packetData.withUnsafeMutableBytes { buffer in
-            var icmpHeader = buffer.load(as: ICMPHeader.self)
-            let receivedChecksum = icmpHeader.checksum
-
-            icmpHeader.checksum = 0
-            buffer.storeBytes(of: icmpHeader, as: ICMPHeader.self)
-
-            let computedChecksum = in_chksum(Data(buffer))
-            let sequence = UInt16(bigEndian: icmpHeader.sequenceNumber)
-
-            guard identifier == self.identifier, receivedChecksum == computedChecksum else { return false }
-
-            outSequence = sequence
-            outSourceAddress = sourceAddress
-
-            return true
-        }
-    }
-    #endif
 }
 
 private func in_chksum(_ data: Data) -> UInt16 {
