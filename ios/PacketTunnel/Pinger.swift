@@ -34,33 +34,11 @@ class Pinger {
     }
 
     func start(delay: DispatchTimeInterval, repeating repeatInterval: DispatchTimeInterval) throws {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         guard let newSocket = CFSocketCreate(kCFAllocatorDefault, AF_INET, SOCK_DGRAM, IPPROTO_ICMP, 0, nil, nil) else {
             throw Error.createSocket
-        }
-
-        if let interfaceName = interfaceName {
-            var index = if_nametoindex(interfaceName)
-            guard index > 0 else {
-                throw Error.mapInterfaceNameToIndex(errno)
-            }
-
-            logger.debug("Bind socket to \"\(interfaceName)\" (index: \(index))...")
-
-            let bindResult = setsockopt(
-                CFSocketGetNative(newSocket),
-                IPPROTO_IP,
-                IP_BOUND_IF,
-                &index,
-                socklen_t(MemoryLayout.size(ofValue: index))
-            )
-
-            guard bindResult != -1 else {
-                logger.error("Failed to bind socket to \"\(interfaceName)\" (index: \(index), errno: \(errno)).")
-
-                throw Error.bindSocket(errno)
-            }
-        } else {
-            logger.debug("Interface is not specified.")
         }
 
         let flags = CFSocketGetSocketFlags(newSocket)
@@ -68,13 +46,13 @@ class Pinger {
             CFSocketSetSocketFlags(newSocket, flags | kCFSocketCloseOnInvalidate)
         }
 
+        try bindSocket(newSocket)
+
         guard let runLoop = CFSocketCreateRunLoopSource(kCFAllocatorDefault, newSocket, 0) else {
             throw Error.createRunLoop
         }
 
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoop, .defaultMode)
-
-        stateLock.lock()
 
         let newTimer = DispatchSource.makeTimerSource()
         newTimer.setEventHandler { [weak self] in
@@ -92,8 +70,6 @@ class Pinger {
 
         newTimer.schedule(wallDeadline: .now() + delay, repeating: repeatInterval)
         newTimer.resume()
-
-        stateLock.unlock()
     }
 
     func stop() {
@@ -119,7 +95,6 @@ class Pinger {
         }
         stateLock.unlock()
 
-        let payload = Data()
         var sa = sockaddr_in()
         sa.sin_len = UInt8(MemoryLayout.size(ofValue: sa))
         sa.sin_family = sa_family_t(AF_INET)
@@ -128,7 +103,7 @@ class Pinger {
         }
 
         let sequenceNumber = nextSequenceNumber()
-        let packetData = Self.createICMPPacket(identifier: identifier, sequenceNumber: sequenceNumber, payload: payload)
+        let packetData = Self.createICMPPacket(identifier: identifier, sequenceNumber: sequenceNumber, payload: nil)
 
         let bytesSent = packetData.withUnsafeBytes { dataBuffer -> Int in
             return withUnsafeBytes(of: &sa) { bufferPointer in
@@ -161,7 +136,35 @@ class Pinger {
         return nextSequenceNumber
     }
 
-    private class func createICMPPacket(identifier: UInt16, sequenceNumber: UInt16, payload: Data) -> Data {
+    private func bindSocket(_ socket: CFSocket) throws {
+        guard let interfaceName = interfaceName else {
+            logger.debug("Interface is not specified.")
+            return
+        }
+
+        var index = if_nametoindex(interfaceName)
+        guard index > 0 else {
+            throw Error.mapInterfaceNameToIndex(errno)
+        }
+
+        logger.debug("Bind socket to \"\(interfaceName)\" (index: \(index))...")
+
+        let result = setsockopt(
+            CFSocketGetNative(socket),
+            IPPROTO_IP,
+            IP_BOUND_IF,
+            &index,
+            socklen_t(MemoryLayout.size(ofValue: index))
+        )
+
+        if result == -1 {
+            logger.error("Failed to bind socket to \"\(interfaceName)\" (index: \(index), errno: \(errno)).")
+
+            throw Error.bindSocket(errno)
+        }
+    }
+
+    private class func createICMPPacket(identifier: UInt16, sequenceNumber: UInt16, payload: Data?) -> Data {
         // Create data buffer.
         var data = Data()
 
@@ -181,7 +184,9 @@ class Pinger {
         withUnsafeBytes(of: sequenceNumber.bigEndian) { data.append(Data($0)) }
 
         // Append payload.
-        data.append(contentsOf: payload)
+        if let payload = payload {
+            data.append(contentsOf: payload)
+        }
 
         // Calculate checksum.
         let checksum = in_chksum(data)
