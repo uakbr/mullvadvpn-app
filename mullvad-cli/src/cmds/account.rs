@@ -210,16 +210,15 @@ impl Account {
             .await
             .map_err(map_device_error)?
             .into_inner();
-        let mut device_id = None;
-        for device in device_list.devices {
-            if device.name.eq_ignore_ascii_case(&device_to_revoke)
-                || device.id.eq_ignore_ascii_case(&device_to_revoke)
-            {
-                device_id = Some(device.id);
-                break;
-            }
-        }
-        let device_id = device_id.ok_or_else(|| Error::Other(DEVICE_NOT_FOUND_ERROR))?;
+        let device_id = device_list
+            .devices
+            .into_iter()
+            .find(|dev| {
+                dev.name.eq_ignore_ascii_case(&device_to_revoke)
+                    || dev.id.eq_ignore_ascii_case(&device_to_revoke)
+            })
+            .map(|dev| dev.id)
+            .ok_or_else(|| Error::Other(DEVICE_NOT_FOUND_ERROR))?;
 
         rpc.remove_device(types::DeviceRemoval {
             account_token: token,
