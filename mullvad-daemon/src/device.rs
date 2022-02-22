@@ -63,8 +63,8 @@ pub enum Error {
     ParseDeviceCache(#[error(source)] serde_json::Error),
     #[error(display = "Unexpected HTTP request error")]
     OtherRestError(#[error(source)] rest::Error),
-    #[error(display = "Oneshot was unexpectedly cancelled")]
-    Cancelled(#[error(source)] oneshot::Canceled),
+    #[error(display = "The device update task is not running")]
+    DeviceUpdaterCancelled(#[error(source)] oneshot::Canceled),
 }
 
 impl Error {
@@ -179,7 +179,7 @@ impl AccountManager {
             let mut inner = self.inner.lock().unwrap();
             inner.data.replace(data.clone());
         }
-        if let Err(error) = flatten_result(result_rx.await.map_err(Error::Cancelled)) {
+        if let Err(error) = flatten_result(result_rx.await.map_err(Error::DeviceUpdaterCancelled)) {
             // Delete the device if an I/O error occurred
             self.logout();
             return Err(error);
@@ -202,7 +202,7 @@ impl AccountManager {
             inner.data.replace(data.clone())
         };
 
-        if let Err(error) = flatten_result(result_rx.await.map_err(Error::Cancelled)) {
+        if let Err(error) = flatten_result(result_rx.await.map_err(Error::DeviceUpdaterCancelled)) {
             // Delete the device if an I/O error occurred
             self.logout();
             return Err(error);
