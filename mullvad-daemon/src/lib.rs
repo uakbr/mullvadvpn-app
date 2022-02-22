@@ -223,7 +223,6 @@ pub enum DaemonCommand {
     GetCurrentLocation(oneshot::Sender<Option<GeoIpLocation>>),
     CreateNewAccount(ResponseTx<String, Error>),
     /// Request the metadata for an account.
-    /// TODO: Remove this? GetDevice?
     GetAccountData(
         ResponseTx<AccountData, mullvad_rpc::rest::Error>,
         AccountToken,
