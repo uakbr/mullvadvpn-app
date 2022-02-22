@@ -676,14 +676,14 @@ where
                     ));
                     if result_rx.await.is_ok() {
                         log::debug!("API endpoint: {}", address);
-                        Ok(())
+                        true
                     } else {
                         log::error!("Failed to update allowed endpoint");
-                        Err(())
+                        false
                     }
                 } else {
                     log::error!("Tunnel state machine is down");
-                    Err(())
+                    false
                 }
             }
         };

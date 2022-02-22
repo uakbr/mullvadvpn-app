@@ -15,9 +15,7 @@ async fn main() {
 
     let relay_list_request = RelayListProxy::new(
         runtime
-            .mullvad_rest_handle(ApiConnectionMode::Direct.into_repeat(), |_| async move {
-                Ok(())
-            })
+            .mullvad_rest_handle(ApiConnectionMode::Direct.into_repeat(), |_| async { true })
             .await,
     )
     .relay_list(None)

@@ -308,7 +308,7 @@ async fn send_problem_report_inner(
                 ApiConnectionMode::try_from_cache(cache_dir)
                     .await
                     .into_repeat(),
-                |_| async move { Ok(()) },
+                |_| async { true },
             )
             .await,
     );

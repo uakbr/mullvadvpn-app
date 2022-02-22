@@ -174,7 +174,7 @@ async fn remove_wireguard_key() -> Result<(), Error> {
                         ApiConnectionMode::try_from_cache(&cache_path)
                             .await
                             .into_repeat(),
-                        |_| async move { Ok(()) },
+                        |_| async { true },
                     )
                     .await,
             );

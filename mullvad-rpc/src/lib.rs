@@ -209,13 +209,12 @@ impl MullvadRpcRuntime {
     /// Creates a new request service and returns a handle to it.
     async fn new_request_service<
         T: Stream<Item = ApiConnectionMode> + Unpin + Send + 'static,
-        F: (Fn(SocketAddr) -> Fut) + Send + Sync + 'static,
-        Fut: Future<Output = std::result::Result<(), ()>> + Send + 'static,
+        AcceptedNewEndpoint: Future<Output = bool> + Send + 'static,
     >(
         &self,
         sni_hostname: Option<String>,
         proxy_provider: T,
-        new_address_callback: F,
+        new_address_callback: impl (Fn(SocketAddr) -> AcceptedNewEndpoint) + Send + Sync + 'static,
     ) -> rest::RequestServiceHandle {
         let service_handle = rest::RequestService::new(
             sni_hostname,
@@ -233,12 +232,11 @@ impl MullvadRpcRuntime {
     /// Returns a request factory initialized to create requests for the master API
     pub async fn mullvad_rest_handle<
         T: Stream<Item = ApiConnectionMode> + Unpin + Send + 'static,
-        F: (Fn(SocketAddr) -> Fut) + Send + Sync + 'static,
-        Fut: Future<Output = std::result::Result<(), ()>> + Send + 'static,
+        AcceptedNewEndpoint: Future<Output = bool> + Send + 'static,
     >(
         &self,
         proxy_provider: T,
-        new_address_callback: F,
+        new_address_callback: impl (Fn(SocketAddr) -> AcceptedNewEndpoint) + Send + Sync + 'static,
     ) -> rest::MullvadRestHandle {
         let service = self
             .new_request_service(Some(API.host.clone()), proxy_provider, new_address_callback)
@@ -255,11 +253,9 @@ impl MullvadRpcRuntime {
 
     /// Returns a new request service handle
     pub async fn rest_handle(&mut self) -> rest::RequestServiceHandle {
-        self.new_request_service(
-            None,
-            ApiConnectionMode::Direct.into_repeat(),
-            |_| async move { Ok(()) },
-        )
+        self.new_request_service(None, ApiConnectionMode::Direct.into_repeat(), |_| async {
+            true
+        })
         .await
     }
 

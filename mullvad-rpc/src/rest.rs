@@ -107,8 +107,8 @@ impl Error {
 /// requests
 pub(crate) struct RequestService<
     T: Stream<Item = ApiConnectionMode>,
-    F: Fn(SocketAddr) -> Fut,
-    Fut: Future<Output = std::result::Result<(), ()>>,
+    F: Fn(SocketAddr) -> AcceptedNewEndpoint,
+    AcceptedNewEndpoint: Future<Output = bool>,
 > {
     command_tx: mpsc::Sender<RequestCommand>,
     command_rx: mpsc::Receiver<RequestCommand>,
@@ -122,9 +122,9 @@ pub(crate) struct RequestService<
 
 impl<
         T: Stream<Item = ApiConnectionMode> + Unpin + Send + 'static,
-        F: (Fn(SocketAddr) -> Fut) + Send + Sync + 'static,
-        Fut: Future<Output = std::result::Result<(), ()>> + Send + 'static,
-    > RequestService<T, F, Fut>
+        F: (Fn(SocketAddr) -> AcceptedNewEndpoint) + Send + Sync + 'static,
+        AcceptedNewEndpoint: Future<Output = bool> + Send + 'static,
+    > RequestService<T, F, AcceptedNewEndpoint>
 {
     /// Constructs a new request service.
     pub async fn new(
@@ -220,7 +220,7 @@ impl<
                         None => self.address_cache.get_address().await,
                     };
                     // Switch to new connection mode unless rejected by address change callback
-                    if let Ok(()) = (self.new_address_callback)(endpoint).await {
+                    if (self.new_address_callback)(endpoint).await {
                         self.connector_handle.set_connection_mode(new_config);
                     }
                 }
