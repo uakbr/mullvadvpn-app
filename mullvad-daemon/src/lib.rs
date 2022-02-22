@@ -663,12 +663,12 @@ where
 
         let account_history = account_history::AccountHistory::new(
             &settings_dir,
-            account_manager.get().map(|device| device.token),
+            account_manager.data().map(|device| device.token),
         )
         .await
         .map_err(Error::LoadAccountHistory)?;
 
-        let target_state = if !account_manager.is_some() {
+        let target_state = if !account_manager.has_data() {
             PersistentTargetState::force(&cache_dir, TargetState::Unsecured).await
         } else if settings.auto_connect {
             log::info!("Automatically connecting since auto-connect is turned on");
@@ -1040,7 +1040,7 @@ where
         >,
         retry_attempt: u32,
     ) {
-        if let Some(device) = self.account_manager.get() {
+        if let Some(device) = self.account_manager.data() {
             let result = match self.settings.get_relay_settings() {
                 RelaySettings::CustomTunnelEndpoint(custom_relay) => {
                     self.last_generated_relay = None;
@@ -1209,7 +1209,7 @@ where
 
                 let wg_data = self
                     .account_manager
-                    .get()
+                    .data()
                     .map(|device| device.wg_data)
                     .ok_or(Error::NoKeyAvailable)?;
                 let tunnel = wireguard::TunnelConfig {
@@ -1245,7 +1245,7 @@ where
             }
             device::ValidationResult::Updated => {
                 self.event_listener
-                    .notify_device_event(DeviceEvent::new(self.account_manager.get(), true));
+                    .notify_device_event(DeviceEvent::new(self.account_manager.data(), true));
             }
         }
     }
@@ -1382,7 +1382,7 @@ where
         if Some(device_id)
             != self
                 .account_manager
-                .get()
+                .data()
                 .map(|device| device.device.id)
                 .as_ref()
         {
@@ -1397,7 +1397,7 @@ where
     }
 
     async fn handle_device_migration_event(&mut self, data: DeviceData) {
-        if self.account_manager.get().is_some() {
+        if self.account_manager.has_data() {
             // Discard stale device
             return;
         }
@@ -1543,7 +1543,7 @@ where
     }
 
     async fn on_create_new_account(&mut self, tx: ResponseTx<String, Error>) {
-        if self.account_manager.is_some() {
+        if self.account_manager.has_data() {
             let _ = tx.send(Err(Error::AlreadyLoggedIn));
             return;
         }
@@ -1578,7 +1578,7 @@ where
     }
 
     async fn on_get_www_auth_token(&mut self, tx: ResponseTx<String, Error>) {
-        if let Some(device) = self.account_manager.get() {
+        if let Some(device) = self.account_manager.data() {
             let future = self
                 .account_manager
                 .account_service()
@@ -1605,7 +1605,7 @@ where
         tx: ResponseTx<VoucherSubmission, Error>,
         voucher: String,
     ) {
-        if let Some(device) = self.account_manager.get() {
+        if let Some(device) = self.account_manager.data() {
             let mut account = self.account_manager.account_service();
             tokio::spawn(async move {
                 Self::oneshot_send(
@@ -1663,7 +1663,7 @@ where
     }
 
     async fn set_account(&mut self, account_token: Option<String>) -> Result<bool, Error> {
-        let previous_token = self.account_manager.get().map(|device| device.token);
+        let previous_token = self.account_manager.data().map(|device| device.token);
         if previous_token == account_token {
             return Ok(false);
         }
@@ -1712,7 +1712,7 @@ where
 
         Self::oneshot_send(
             tx,
-            Ok(self.account_manager.get().map(DeviceConfig::from)),
+            Ok(self.account_manager.data().map(DeviceConfig::from)),
             "get_device response",
         );
     }
@@ -2370,14 +2370,14 @@ where
     async fn on_rotate_wireguard_key(&mut self, tx: ResponseTx<(), Error>) {
         let result = self.account_manager.rotate_key().await;
         if let Ok(ref _wg_data) = result {
-            let device = DeviceEvent::new(self.account_manager.get(), false);
+            let device = DeviceEvent::new(self.account_manager.data(), false);
             self.event_listener.notify_device_event(device);
         }
         let _ = tx.send(result.map(|_| ()).map_err(Error::KeyRotationError));
     }
 
     async fn on_get_wireguard_key(&mut self, tx: ResponseTx<Option<PublicKey>, Error>) {
-        let result = if let Some(device) = self.account_manager.get() {
+        let result = if let Some(device) = self.account_manager.data() {
             Ok(Some(device.wg_data.get_public_key()))
         } else {
             Err(Error::NoAccountToken)
