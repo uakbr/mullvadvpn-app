@@ -48,6 +48,10 @@ Line wrap the file at 100 chars.                                              Th
 - Enable "Always require VPN" by default if the settings cannot be parsed. This reduces the number
   of errors that lead to the daemon unexpectedly starting into non-blocking mode.
 
+#### Android
+- Prevent location request responses from being received outside the tunnel when in the connected
+  state.
+
 
 ## [2022.1-beta1] - 2022-02-14
 ### Added
