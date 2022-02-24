@@ -14,8 +14,11 @@ import Logging
 import class WireGuardKit.PublicKey
 
 struct TunnelManagerConfiguration {
-    /// Tunnel connection info poll interval used in connecting and reasserting states.
-    let tunnelConnectionInfoPollInterval: TimeInterval = 10
+    /// Delay before starting to poll the current relay from the tunnel process.
+    let relayPollStartDelay: TimeInterval = 5
+
+    /// Periodicitiy of polling the current relay from the tunnel process.
+    let relayPollInterval: TimeInterval = 10
 
     /// Private key rotation interval (in seconds)
     let privateKeyRotationInterval: TimeInterval = 60 * 60 * 24 * 4
@@ -26,8 +29,7 @@ struct TunnelManagerConfiguration {
 
 /// A class that provides a convenient interface for VPN tunnels configuration, manipulation and
 /// monitoring.
-class TunnelManager: TunnelManagerStateDelegate
-{
+final class TunnelManager: TunnelManagerStateDelegate {
     private let configuration = TunnelManagerConfiguration()
 
     /// Operation categories
@@ -58,7 +60,8 @@ class TunnelManager: TunnelManagerStateDelegate
     private var privateKeyRotationTimer: DispatchSourceTimer?
     private var isRunningPeriodicPrivateKeyRotation = false
 
-    private var tunnelConnectionInfoPollTimer: DispatchSourceTimer?
+    private var relayPollTimer: DispatchSourceTimer?
+    private var isPollingRelay = false
 
     var tunnelInfo: TunnelInfo? {
         return state.tunnelInfo
@@ -520,11 +523,15 @@ class TunnelManager: TunnelManagerStateDelegate
         case .connecting, .reasserting:
             // Start polling tunnel connection info to keep the relay information up to date
             // while the tunnel process is trying to connect.
-            startTunnelConnectionInfoPolling()
+            if !isPollingRelay {
+                startPollingRelay()
+            }
 
         case .connected, .disconnecting, .disconnected:
             // Stop polling once connected or transitioning/already in disconnected state.
-            cancelTunnelConnectionInfoPolling(forRestart: false)
+            if isPollingRelay {
+                cancelPollingRelay(forRestart: false)
+            }
 
         default:
             break
@@ -624,34 +631,41 @@ class TunnelManager: TunnelManagerStateDelegate
 
 
 
-    // MARK: - Tunnel connection info polling
+    // MARK: - Tunnel relay polling.
 
-    private func startTunnelConnectionInfoPolling() {
-        if tunnelConnectionInfoPollTimer == nil {
+    private func startPollingRelay() {
+        if relayPollTimer == nil {
             logger.debug("Start tunnel connection info polling.")
         } else {
             logger.debug("Restart tunnel connection info polling.")
         }
 
-        cancelTunnelConnectionInfoPolling(forRestart: true)
+        cancelPollingRelay(forRestart: true)
 
-        tunnelConnectionInfoPollTimer = DispatchSource.makeTimerSource(queue: stateQueue)
-        tunnelConnectionInfoPollTimer?.setCancelHandler { [weak self] in
-            self?.logger.debug("Poll tunnel connection info.")
-            self?.updateTunnelState()
+        isPollingRelay = true
+
+        let newTimer = DispatchSource.makeTimerSource(queue: stateQueue)
+        newTimer.setCancelHandler { [weak self] in
+            guard let self = self else { return }
+            self.logger.debug("Poll tunnel connection info.")
+            self.updateTunnelState()
         }
 
-        tunnelConnectionInfoPollTimer?.schedule(wallDeadline: .now(), repeating: configuration.tunnelConnectionInfoPollInterval)
-        tunnelConnectionInfoPollTimer?.activate()
+        relayPollTimer = newTimer
+
+        newTimer.schedule(wallDeadline: .now() + configuration.relayPollStartDelay, repeating: configuration.relayPollInterval)
+        newTimer.activate()
     }
 
-    private func cancelTunnelConnectionInfoPolling(forRestart: Bool) {
+    private func cancelPollingRelay(forRestart: Bool) {
         if !forRestart {
             logger.debug("Stop tunnel connection info polling.")
         }
 
-        tunnelConnectionInfoPollTimer?.cancel()
-        tunnelConnectionInfoPollTimer = nil
+        relayPollTimer?.cancel()
+        relayPollTimer = nil
+
+        isPollingRelay = false
     }
 
 }
